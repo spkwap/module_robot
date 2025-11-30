@@ -1,0 +1,100 @@
+#include <stdio.h>
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2c.h"
+
+#include "vl53l0x.h"
+#include "pca9685.h"
+
+#define I2C_PORT I2C_NUM_0
+#define SDA_PIN 21
+#define SCL_PIN 22
+#define XSHUT_PIN -1 
+
+#define SPEED_FWD    50 
+#define SPEED_STOP   0  
+#define DIST_LIMIT   200 
+
+static const char *TAG = "ROBOT_NO_XSHUT";
+
+void app_main()
+{
+
+    vl53l0x_t *sensor = vl53l0x_config(I2C_PORT, SCL_PIN, SDA_PIN, XSHUT_PIN, 0x29, 0);
+    
+    if (sensor == NULL) {
+        ESP_LOGE(TAG, "Błąd krytyczny alokacji pamięci!");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Start PCA9685 (Silniki)...");
+    pca9685_init(I2C_PORT);
+    pca9685_set_pwm_freq(I2C_PORT, 50);
+    pca9685_set_servo_speed(I2C_PORT, 0, 0);
+    
+    ESP_LOGI(TAG, "Silniki zatrzymane. Czekam na ustabilizowanie napięcia...");
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    ESP_LOGI(TAG, "Start VL53L0X...");
+    
+    int retry = 0;
+    bool sensor_alive = false;
+
+    while (vl53l0x_init(sensor) != NULL) {
+        retry++;
+        ESP_LOGW(TAG, "Próba inicjalizacji %d nieudana...", retry);
+        
+        if (retry > 2) {
+            ESP_LOGI(TAG, "Resetuję magistralę I2C...");
+            i2c_driver_delete(I2C_PORT);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            vl53l0x_config(I2C_PORT, SCL_PIN, SDA_PIN, XSHUT_PIN, 0x29, 0);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (retry > 5) break;
+    }
+
+    if (retry <= 5) {
+        vl53l0x_setMeasurementTimingBudget(sensor, 33000);
+        vl53l0x_startContinuous(sensor, 0);
+        sensor_alive = true;
+        ESP_LOGI(TAG, ">>> CZUJNIK DZIAŁA! JAZDA! <<<");
+    } else {
+        ESP_LOGE(TAG, ">>> CZUJNIK NIE ODPOWIADA (Sprawdź kable/zasilanie) <<<");
+    }
+
+    int error_counter = 0;
+
+    while (1) {
+        uint16_t distance = 9999;
+
+        if (sensor_alive) {
+            distance = vl53l0x_readRangeContinuousMillimeters(sensor);
+            
+            if (vl53l0x_timeoutOccurred(sensor) || distance > 8000 || distance == 0) {
+                error_counter++;
+                distance = 9999;
+                
+                if (error_counter > 50) {
+                     i2c_driver_delete(I2C_PORT);
+                     vl53l0x_config(I2C_PORT, SCL_PIN, SDA_PIN, XSHUT_PIN, 0x29, 0);
+                     error_counter = 0;
+                }
+            } else {
+                error_counter = 0;
+            }
+        }
+
+        if (distance < DIST_LIMIT) {
+            ESP_LOGI(TAG, "Blisko! (%d mm)", distance);
+            pca9685_set_servo_speed(I2C_PORT, 0, SPEED_STOP);
+        } 
+        else {
+            pca9685_set_servo_speed(I2C_PORT, 0, SPEED_FWD);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}

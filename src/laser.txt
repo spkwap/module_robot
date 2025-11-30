@@ -1,0 +1,51 @@
+#include <stdio.h>
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2c.h"
+#include "vl53l0x.h"
+
+#define I2C_PORT I2C_NUM_0
+#define SDA_PIN 21
+#define SCL_PIN 22
+#define XSHUT_PIN -1
+
+static const char *TAG = "SENSOR_TEST";
+
+void app_main()
+{
+    vl53l0x_t *dev = vl53l0x_config(I2C_PORT, SCL_PIN, SDA_PIN, XSHUT_PIN, 0x29, 0);
+
+    if (dev == NULL) {
+        ESP_LOGE(TAG, "Błąd alokacji pamięci dla czujnika");
+        while(1) vTaskDelay(100);
+    }
+
+    ESP_LOGI(TAG, "Inicjalizacja VL53L0X...");
+    int retry = 0;
+    while (vl53l0x_init(dev) != NULL) {
+        retry++;
+        ESP_LOGW(TAG, "Próba init %d...", retry);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        if (retry > 5) break;
+    }
+
+    vl53l0x_startContinuous(dev, 0); 
+    ESP_LOGI(TAG, "Start pomiarów (Timeout ustawiony na 1s)");
+
+    while (1) {
+        uint16_t distance = vl53l0x_readRangeContinuousMillimeters(dev);
+
+        if (vl53l0x_timeoutOccurred(dev)) {
+            ESP_LOGW(TAG, "TIMEOUT - Czujnik nie odpowiedział w 1s");
+        } else {
+            if (distance > 8000) {
+                ESP_LOGI(TAG, "Dystans: Poza zasięgiem (>8m)");
+            } else {
+                ESP_LOGI(TAG, "Dystans: %d mm", distance);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
