@@ -1,107 +1,117 @@
 #include <stdio.h>
-#include "esp_log.h"
-#include "driver/i2c.h"
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
+#include "esp_timer.h"
+#include "nvs_flash.h"
+#include "robot.h"
 #include "vl53l0x.h"
-#include "pca9685.h"
-#include "pcf8575.h"
 
-#define I2C_PORT    I2C_NUM_0
-#define SDA_PIN     21
-#define SCL_PIN     22
-#define XSHUT_PIN   -1 
+char g_dist[16] = "--";
+bool g_obs = false;
+bool g_mot = false;
+int virtual_flags[5] = {0, 0, 0, 0, 0}; 
+rule_t system_rules[MAX_RULES];
 
-#define PIN_LED     7
-#define PIN_BUTTON  8
-
-#define SPEED_FWD    60
-#define SPEED_BACK  -60
-#define SPEED_STOP   0
-#define DIST_LIMIT   200 
-
-static const char *TAG = "ROBOT_FULL_SYSTEM";
-
-void app_main()
-{
-    vl53l0x_t *sensor = vl53l0x_config(I2C_PORT, SCL_PIN, SDA_PIN, XSHUT_PIN, 0x29, 0);
-    
-    if (sensor == NULL) {
-        ESP_LOGE(TAG, "Błąd alokacji I2C");
-        return;
+bool evaluate_condition(input_type_t in_type, operator_t op, int threshold, uint16_t dist, int tcrt) {
+    if (in_type == IN_NONE) return false;
+    int val_to_check = 0;
+    if (in_type == IN_DISTANCE) val_to_check = dist;
+    else if (in_type == IN_TCRT) val_to_check = tcrt;
+    else if (in_type >= IN_FLAG_1 && in_type <= IN_FLAG_5) {
+        val_to_check = virtual_flags[in_type - IN_FLAG_1];
     }
     
-    vTaskDelay(pdMS_TO_TICKS(200));
+    if(op == OP_LESS) return (val_to_check < threshold);
+    if(op == OP_GREATER) return (val_to_check > threshold);
+    if(op == OP_EQUAL) return (val_to_check == threshold);
+    return false;
+}
 
-    ESP_LOGI(TAG, "Start PCF8575...");
-    if (pcf8575_init(I2C_PORT) == ESP_OK) {
-        pcf8575_set_pin(I2C_PORT, PIN_LED, 1); vTaskDelay(200/portTICK_PERIOD_MS);
-        pcf8575_set_pin(I2C_PORT, PIN_LED, 0);
-        
-        pcf8575_set_pin(I2C_PORT, PIN_BUTTON, 1);
-    } else {
-        ESP_LOGE(TAG, "Błąd PCF8575");
+static void sensor_task(void *pv) {
+    vl53l0x_t *sensor = vl53l0x_config_with_bus(i2c_bus, -1, 0x29, 1);
+    if (sensor && !vl53l0x_init(sensor)) {
+        vl53l0x_setMeasurementTimingBudget(sensor, 50000); 
+        vl53l0x_startContinuous(sensor, 200);
     }
 
-    ESP_LOGI(TAG, "Start PCA9685...");
-    pca9685_init(I2C_PORT);
-    pca9685_set_pwm_freq(I2C_PORT, 50);
-    pca9685_set_servo_speed(I2C_PORT, 0, 0);
-
-    ESP_LOGI(TAG, "Start VL53L0X...");
-    int retry = 0;
-    while (vl53l0x_init(sensor) != NULL) {
-        retry++;
-        ESP_LOGW(TAG, "Próba czujnika %d...", retry);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (retry > 5) break;
-    }
-    
-    vl53l0x_setTimeout(sensor, 1000);
-    vl53l0x_startContinuous(sensor, 0);
-    
-
-    bool pause_mode = false;
+    uint64_t active_timer_end = 0;
+    int locked_ml = 0; int locked_mr = 0; bool timer_is_active = false;
 
     while (1) {
-        if (pcf8575_get_pin(I2C_PORT, PIN_BUTTON) == 0) {
-            
-            vTaskDelay(pdMS_TO_TICKS(50));
-            if (pcf8575_get_pin(I2C_PORT, PIN_BUTTON) == 0) {
-                
-                pause_mode = !pause_mode;
-                ESP_LOGW(TAG, "Przycisk wciśnięty, tryb cofania: %d", pause_mode);
-                
-                while(pcf8575_get_pin(I2C_PORT, PIN_BUTTON) == 0) {
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                }
-            }
+        uint16_t current_dist = 9999;
+        if (sensor) {
+            uint16_t range = vl53l0x_readRangeContinuousMillimeters(sensor);
+            if (vl53l0x_timeoutOccurred(sensor) || range >= 8190) { strcpy(g_dist, "OOR"); current_dist = 9999; } 
+            else { snprintf(g_dist, sizeof(g_dist), "%d", range); current_dist = range; }
         }
-        pcf8575_set_pin(I2C_PORT, PIN_BUTTON, 1);
-
         
-        if (pause_mode) {
-            pca9685_set_servo_speed(I2C_PORT, 0, SPEED_STOP);
-            pcf8575_set_pin(I2C_PORT, PIN_LED, 1);
+        bool pin_state = read_tcrt_sensor();
+        g_obs = !pin_state; 
+        int current_tcrt = g_obs ? 1 : 0; 
+
+        int target_ml = 0; int target_mr = 0; 
+        uint64_t now_ms = esp_timer_get_time() / 1000ULL; 
+
+        if (timer_is_active && now_ms < active_timer_end) {
+            target_ml = locked_ml; target_mr = locked_mr;
         } 
         else {
-            pcf8575_set_pin(I2C_PORT, PIN_LED, 0);
-            
-            uint16_t distance = vl53l0x_readRangeContinuousMillimeters(sensor);
-            
-            if (vl53l0x_timeoutOccurred(sensor) || distance > 8000 || distance == 0) {
-                distance = 9999; 
+            timer_is_active = false; 
+            int pending_duration = 0; 
+
+            for(int i = 0; i < MAX_RULES; i++) {
+                if(!system_rules[i].active) continue;
+
+                bool cond_1 = evaluate_condition(system_rules[i].in_type, system_rules[i].op, system_rules[i].threshold, current_dist, current_tcrt);
+                
+                bool final_condition = cond_1;
+                if (system_rules[i].logic_link == 1) { 
+                    bool cond_2 = evaluate_condition(system_rules[i].in_type_2, system_rules[i].op_2, system_rules[i].threshold_2, current_dist, current_tcrt);
+                    final_condition = (cond_1 && cond_2);
+                } else if (system_rules[i].logic_link == 2) { 
+                    bool cond_2 = evaluate_condition(system_rules[i].in_type_2, system_rules[i].op_2, system_rules[i].threshold_2, current_dist, current_tcrt);
+                    final_condition = (cond_1 || cond_2);
+                }
+
+                output_type_t out_type = final_condition ? system_rules[i].act_out : system_rules[i].els_out;
+                int out_val            = final_condition ? system_rules[i].act_val : system_rules[i].els_val;
+
+                if(out_type == OUT_MOTOR_LEFT) { target_ml = out_val; }
+                else if(out_type == OUT_MOTOR_RIGHT) { target_mr = out_val; }
+                else if(out_type == OUT_MOTORS_BOTH) { target_ml = out_val; target_mr = out_val; }
+                else if(out_type >= OUT_FLAG_1 && out_type <= OUT_FLAG_5) {
+                    virtual_flags[out_type - OUT_FLAG_1] = out_val; 
+                }
+
+                if (final_condition && (out_type == OUT_MOTOR_LEFT || out_type == OUT_MOTOR_RIGHT || out_type == OUT_MOTORS_BOTH)) {
+                    pending_duration = system_rules[i].duration_ms; 
+                }
             }
 
-            if (distance < DIST_LIMIT) {
-                ESP_LOGI(TAG, "Przeszkoda (%d mm)", distance);
-                pca9685_set_servo_speed(I2C_PORT, 0, SPEED_BACK);
-            } else {
-                pca9685_set_servo_speed(I2C_PORT, 0, SPEED_FWD);
+            if (pending_duration > 0) {
+                active_timer_end = now_ms + pending_duration;
+                locked_ml = target_ml; locked_mr = target_mr;
+                timer_is_active = true;
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        motors_set_speed(target_ml, target_mr); 
+        g_mot = ((target_ml != 0) || (target_mr != 0));
+
+        vTaskDelay(pdMS_TO_TICKS(100)); 
     }
+}
+
+void app_main(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) { 
+        nvs_flash_erase(); nvs_flash_init(); 
+    }
+    
+    hardware_init(); 
+    network_init_ap(); 
+    webserver_start(); 
+    
+    xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
 }

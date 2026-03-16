@@ -1,5 +1,6 @@
 // VL53L0X control
 // Copyright © 2019 Adrian Kennard, Andrews & Arnold Ltd. See LICENCE file for details. GPL 3.0
+// Updated for ESP-IDF v5.2+ I2C Master Driver API
 
 #ifndef VL53L0X_H
 #define VL53L0X_H
@@ -10,6 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <malloc.h>
+#include <driver/i2c_master.h>
 
 typedef struct vl53l0x_s vl53l0x_t;
 
@@ -18,11 +20,21 @@ typedef enum
 
 // Functions returning const char * are OK for NULL, else error string
 
-// Set up I2C and create the vl53l0x structure, NULL means could not see device on I2C
+// Legacy API: Set up I2C bus and create the vl53l0x structure
+// This will create and manage its own I2C bus (single device use case)
 vl53l0x_t *vl53l0x_config (int8_t port, int8_t scl, int8_t sda, int8_t xshut, uint8_t address, uint8_t io_2v8);
+
+// New API: Create vl53l0x device using an existing I2C bus handle
+// Use this when you have multiple devices on the same I2C bus
+// bus_handle: existing I2C master bus (from i2c_new_master_bus)
+// Returns NULL on failure
+vl53l0x_t *vl53l0x_config_with_bus (i2c_master_bus_handle_t bus_handle, int8_t xshut, uint8_t address, uint8_t io_2v8);
+
 // Initialise the VL53L0X
 const char *vl53l0x_init (vl53l0x_t *);
+
 // End I2C and free the structure
+// If using vl53l0x_config_with_bus, this will NOT delete the bus (caller manages it)
 void vl53l0x_end (vl53l0x_t *);
 
 void vl53l0x_setAddress (vl53l0x_t *, uint8_t new_addr);

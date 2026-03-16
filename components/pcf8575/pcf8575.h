@@ -3,7 +3,7 @@
 
 #include "driver/i2c.h"
 
-#define PCF8575_ADDR 0x20 
+#define PCF8575_ADDR 0x21 
 
 esp_err_t pcf8575_init(i2c_port_t port);
 
