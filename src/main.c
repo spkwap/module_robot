@@ -4,10 +4,12 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "driver/i2c.h"
 #include "robot.h"
 #include "vl53l0x.h"
 
 char g_dist[16] = "--";
+char g_i2c_status[128] = "Skanowanie...";
 bool g_obs = false;
 bool g_mot = false;
 int virtual_flags[5] = {0, 0, 0, 0, 0}; 
@@ -103,15 +105,37 @@ static void sensor_task(void *pv) {
     }
 }
 
+static void scan_i2c_devices() {
+    int devices_found = 0;
+    char temp_buf[16];
+    
+    strcpy(g_i2c_status, "Wykryte I2C: ");
+    
+    for (uint16_t i = 1; i < 127; i++) {
+        esp_err_t ret = i2c_master_probe(i2c_bus, i, 10);
+
+        if (ret == ESP_OK) {
+            snprintf(temp_buf, sizeof(temp_buf), "0x%02X ", i);
+            strcat(g_i2c_status, temp_buf);
+            devices_found++;
+        }
+    }
+    
+    if (devices_found == 0) {
+        strcpy(g_i2c_status, "Brak podlaczonych modulow I2C!");
+    }
+}
+
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) { 
         nvs_flash_erase(); nvs_flash_init(); 
     }
     
-    hardware_init(); 
-    network_init_ap(); 
-    webserver_start(); 
+    hardware_init();
+    scan_i2c_devices();
+    network_init_ap();
+    webserver_start();
     
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
 }

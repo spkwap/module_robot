@@ -44,8 +44,12 @@ static esp_err_t root_handler(httpd_req_t *req) {
 
 static esp_err_t stat_handler(httpd_req_t *req) {
     char buf[256]; 
-    snprintf(buf, sizeof(buf), "{\"d\":\"%s\",\"o\":%d,\"m\":%d,\"f\":[%d,%d,%d,%d,%d]}", 
-             g_dist, g_obs?1:0, g_mot?1:0, virtual_flags[0], virtual_flags[1], virtual_flags[2], virtual_flags[3], virtual_flags[4]);
+    snprintf(buf, sizeof(buf), "{\"d\":\"%s\",\"o\":%d,\"m\":%d,\"i2c\":\"%s\",\"f\":[%d,%d,%d,%d,%d]}", 
+             g_dist, 
+             g_obs ? 1 : 0, 
+             g_mot ? 1 : 0, 
+             g_i2c_status,
+             virtual_flags[0], virtual_flags[1], virtual_flags[2], virtual_flags[3], virtual_flags[4]);
     httpd_resp_set_type(req, "application/json"); 
     httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN); 
     return ESP_OK;

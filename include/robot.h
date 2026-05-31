@@ -22,6 +22,7 @@ typedef struct {
 } rule_t;
 
 extern char g_dist[16];
+extern char g_i2c_status[128];
 extern bool g_obs;
 extern bool g_mot;
 extern int virtual_flags[5];

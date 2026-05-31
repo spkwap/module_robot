@@ -40,6 +40,7 @@ static const char *HTML_PAGE =
 
 "  <div class='sidebar'>"
 "    <h3 class='sidebar-title'>Stan komponentów</h3>"
+"    <div class='module-card'><div class='module-label'>Diagnostyka I2C</div><div class='module-val' style='font-size:0.85rem; color:#5e6c84; display:block;' id='i2c-box'>Ładowanie...</div></div>"
 "    <div class='module-card'><div class='module-label'>Dystans</div><div class='module-val'><div class='dot active'></div><span id='d'>-- mm</span></div></div>"
 "    <div class='module-card'><div class='module-label'>Czujnik Odbicia</div><div class='module-val'><div class='dot' id='o-dot'></div><span id='o'>--</span></div></div>"
 "    <div class='module-card'><div class='module-label'>Silniki</div><div class='module-val'><div class='dot' id='m-dot'></div><span id='m'>--</span></div></div>"
@@ -65,12 +66,14 @@ static const char *HTML_PAGE =
 
 "const d=document.getElementById('d'); const o=document.getElementById('o'); const m=document.getElementById('m');"
 "const odot=document.getElementById('o-dot'); const mdot=document.getElementById('m-dot'); const fbox=document.getElementById('flags-box');"
+"const i2cbox=document.getElementById('i2c-box');"
 
 "setInterval(() => {"
 "  fetch('/api/stat').then(r=>r.json()).then(j => {"
 "    d.innerText=(j.d==='OOR')?'Zasięg maks.':j.d+' mm';"
 "    if(j.o===1){ o.innerText='Wykryto'; odot.className='dot err'; } else { o.innerText='Brak'; odot.className='dot active'; }"
 "    if(j.m===1){ m.innerText='W ruchu'; mdot.className='dot active'; } else { m.innerText='Stop'; mdot.className='dot'; }"
+"    if(j.i2c) i2cbox.innerText = j.i2c;"
 "    let html = '';"
 "    for(let i=0; i<5; i++) html += \"<div style='display:flex;justify-content:space-between;margin-bottom:8px;font-size:0.95rem;'><span style='cursor:pointer;color:#0052cc;text-decoration:underline;' onclick='ren(\"+i+\")' title='Kliknij aby zmienić nazwę!'>\"+flagNames[i]+\"</span><strong>[\"+j.f[i]+\"]</strong></div>\";"
 "    fbox.innerHTML = html;"
