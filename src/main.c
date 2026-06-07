@@ -5,8 +5,11 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 #include "robot.h"
 #include "vl53l0x.h"
+
+#define LED_PIN 2
 
 char g_dist[16] = "--";
 char g_i2c_status[128] = "Skanowanie...";
@@ -14,6 +17,8 @@ bool g_obs = false;
 bool g_mot = false;
 int virtual_flags[5] = {0, 0, 0, 0, 0}; 
 rule_t system_rules[MAX_RULES];
+
+volatile bool is_system_ready = false;
 
 bool evaluate_condition(input_type_t in_type, operator_t op, int threshold, uint16_t dist, int tcrt) {
     if (in_type == IN_NONE) return false;
@@ -126,7 +131,25 @@ static void scan_i2c_devices() {
     }
 }
 
+static void led_status_task(void *pv) {
+    gpio_reset_pin(LED_PIN);
+    gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
+    int led_state = 0;
+    
+    while (!is_system_ready) {
+        gpio_set_level(LED_PIN, led_state);
+        led_state = !led_state;
+        vTaskDelay(pdMS_TO_TICKS(150)); 
+    }
+    
+    gpio_set_level(LED_PIN, 1); 
+    
+    vTaskDelete(NULL); 
+}
+
 void app_main(void) {
+    xTaskCreate(led_status_task, "led_task", 2048, NULL, 1, NULL);
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) { 
         nvs_flash_erase(); nvs_flash_init(); 
@@ -138,4 +161,6 @@ void app_main(void) {
     webserver_start();
     
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);
+
+    is_system_ready = true;
 }
